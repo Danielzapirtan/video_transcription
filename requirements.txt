@@ -1,0 +1,5 @@
+gradio
+pytube
+openai-whisper
+ffmpeg-python
+torch

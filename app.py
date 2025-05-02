@@ -136,7 +136,7 @@ def transcribe_video(video=None, youtube_url=None):
         traceback.print_exc()
         return "Unexpected error occurred. Please check console for details.", None, "0.00s"
 
-with gr.Blocks() as demo:
+with gr.Blocks(analytics_enabled=False) as demo:
     gr.Markdown("# YouTube Video Transcription (Mobile Supported)")
     with gr.Row():
         video_input = gr.Video(label="Upload Video (or use YouTube URL below)")
@@ -151,12 +151,15 @@ with gr.Blocks() as demo:
         download = gr.File(label="Download Transcript")
         timer_display = gr.Textbox(label="Processing Time")
 
+    # Prevent reloading by setting triggers
     transcribe_btn.click(
         fn=transcribe_video,
         inputs=[video_input, url_input],
-        outputs=[output, download, timer_display]
+        outputs=[output, download, timer_display],
+        api_name=False,  # Disable API endpoint creation
+        _js="() => {}"  # Empty JS function to prevent default form submission
     )
 
 if __name__ == "__main__":
     print("Starting Gradio interface...")
-    demo.launch(debug=True)
+    demo.launch(debug=True, prevent_thread_lock=True)

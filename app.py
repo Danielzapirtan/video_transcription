@@ -1,164 +1,65 @@
 import gradio as gr
-import tempfile
+import whisper
+import yt_dlp
 import os
 import time
-import re
-from pytube import YouTube
-import whisper
-import subprocess
-import traceback
 
-model = whisper.load_model("base")
+# Load the Whisper model
+def load_model(model_name="small"):
+    return whisper.load_model(model_name)
 
-def is_valid_youtube_url(url):
-    if not url or not isinstance(url, str):
-        return False
-    youtube_regex = (
-        r'(https?://)?(www\.|m\.)?'
-        r'(youtube|youtu|youtube-nocookie)\.(com|be)/'
-        r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
-    if re.match(youtube_regex, url):
-        return True
-    if "youtu.be/" in url:
-        return True
-    mobile_patterns = [
-        r'https?://m\.youtube\.com/watch\?v=([^&]*)',
-        r'https?://youtube\.com/watch\?v=([^&]*)',
-        r'https?://m\.youtu\.be/([^&]*)'
-    ]
-    return any(re.match(pattern, url) for pattern in mobile_patterns)
+model = load_model()
 
-def download_youtube_audio(youtube_url):
-    try:
-        print(f"Attempting to download: {youtube_url}")
-        yt = YouTube(youtube_url)
-        stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-        if not stream:
-            raise Exception("No audio stream found")
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        print(f"Downloading to temp file: {temp_file.name}")
-        stream.download(filename=temp_file.name)
-        return temp_file.name
-    except Exception as e:
-        print(f"Download failed, trying with OAuth: {str(e)}")
-        try:
-            yt = YouTube(youtube_url, use_oauth=True, allow_oauth_cache=True)
-            stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-            stream.download(filename=temp_file.name)
-            return temp_file.name
-        except Exception as e2:
-            print(f"OAuth download failed: {str(e2)}")
-            raise Exception(f"Failed to download YouTube video. Please check:\n"
-                            f"- URL is correct and public\n"
-                            f"- Video isn't age-restricted\n"
-                            f"- Network connection is working\n"
-                            f"Error: {str(e2)}")
+# Function to download video and transcribe
+def transcribe_youtube(url, model_name="small", language="en"):
+    start_time = time.time()
+    
+    # Download video using yt-dlp
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': 'temp_audio.%(ext)s',
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+    }
+    
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
 
-def transcribe_video(video=None, youtube_url=None):
-    try:
-        print("\nStarting transcription...")
-        print(f"Inputs - Video: {video}, YouTube URL: {youtube_url}")
-        youtube_url = youtube_url.strip() if youtube_url else None
+    # Find the downloaded file
+    audio_file = next((f for f in os.listdir() if f.startswith("temp_audio")), None)
+    
+    if not audio_file:
+        return "Error: No audio file found."
 
-        if not youtube_url and not video:
-            return "Please upload a video or provide a YouTube URL.", None, "0.00s"
+    # Transcribe using Whisper
+    model = load_model(model_name)
+    result = model.transcribe(audio_file, language=language)
 
-        if youtube_url and not is_valid_youtube_url(youtube_url):
-            return ("Invalid YouTube URL. Supported formats:\n"
-                    "• https://www.youtube.com/watch?v=VIDEO_ID\n"
-                    "• https://m.youtube.com/watch?v=VIDEO_ID\n"
-                    "• https://youtu.be/VIDEO_ID\n"
-                    "• https://m.youtu.be/VIDEO_ID", None, "0.00s")
+    # Cleanup
+    os.remove(audio_file)
 
-        start = time.time()
-        file_path = None
-        audio_path = None
-        txt_path = None
+    elapsed_time = time.time() - start_time
+    return result["text"], elapsed_time
 
-        try:
-            if youtube_url:
-                print("Downloading YouTube audio...")
-                file_path = download_youtube_audio(youtube_url)
-            else:
-                if isinstance(video, dict) and "name" in video:
-                    file_path = video["name"]
-                elif isinstance(video, str):
-                    file_path = video
-                else:
-                    return "Invalid video input.", None, "0.00s"
-                print(f"Using uploaded file: {file_path}")
-
-            audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-            print(f"Converting to WAV: {audio_path}")
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-i", file_path,
-                "-ar", "16000",
-                "-ac", "1",
-                "-acodec", "pcm_s16le",
-                "-y",
-                audio_path
-            ]
-            subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-
-            print("Starting transcription...")
-            result = model.transcribe(audio_path)
-            transcript = result["text"]
-            print("Transcription completed")
-
-            txt_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt").name
-            with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(transcript)
-
-            elapsed = f"{time.time() - start:.2f}s"
-            print(f"Done! Time elapsed: {elapsed}")
-            return transcript, txt_path, elapsed
-
-        except subprocess.CalledProcessError as e:
-            err = e.stderr.decode('utf-8') if e.stderr else "Unknown ffmpeg error"
-            return f"Audio conversion failed: {err}", None, "0.00s"
-        except Exception as e:
-            print(f"Processing error: {str(e)}")
-            traceback.print_exc()
-            return f"Error: {str(e)}", None, "0.00s"
-        finally:
-            for path in [audio_path, file_path if youtube_url else None]:
-                if path and os.path.exists(path):
-                    try:
-                        os.remove(path)
-                        print(f"Deleted: {path}")
-                    except Exception as e:
-                        print(f"Error deleting {path}: {str(e)}")
-
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        traceback.print_exc()
-        return "Unexpected error occurred. Please check console for details.", None, "0.00s"
-
-with gr.Blocks(analytics_enabled=False) as demo:
-    gr.Markdown("# YouTube Video Transcription (Mobile Supported)")
-    with gr.Row():
-        video_input = gr.Video(label="Upload Video (or use YouTube URL below)")
-        url_input = gr.Textbox(
-            label="YouTube URL",
-            placeholder="https://m.youtube.com/watch?v=... or https://youtu.be/...",
-            info="Supports all YouTube URLs including mobile (m.)"
-        )
-    transcribe_btn = gr.Button("Transcribe", variant="primary")
-    with gr.Row():
-        output = gr.Textbox(label="Transcription", lines=10)
-        download = gr.File(label="Download Transcript")
-        timer_display = gr.Textbox(label="Processing Time")
-
-    # Prevent reloading by setting triggers
-    transcribe_btn.click(
-        fn=transcribe_video,
-        inputs=[video_input, url_input],
-        outputs=[output, download, timer_display],
-        api_name=False,  # Disable API endpoint creation
+# Gradio UI
+with gr.Blocks() as demo:
+    gr.Markdown("## YouTube Video Transcription App")
+    
+    url_input = gr.Textbox(label="YouTube URL", placeholder="Enter a YouTube video URL (supports mobile URLs)")
+    model_selection = gr.Dropdown(choices=["tiny", "small", "medium", "large"], label="Model Size", value="small")
+    language_selection = gr.Textbox(label="Language (optional)", placeholder="Enter language code (e.g., 'en')")
+    
+    transcribe_button = gr.Button("Transcribe")
+    output_text = gr.Textbox(label="Transcribed Text", interactive=False)
+    timer_text = gr.Textbox(label="Processing Time (seconds)", interactive=False)
+    
+    transcribe_button.click(
+        fn=transcribe_youtube,
+        inputs=[url_input, model_selection, language_selection],
+        outputs=[output_text, timer_text]
     )
 
-if __name__ == "__main__":
-    print("Starting Gradio interface...")
-    demo.launch(debug=True, prevent_thread_lock=True)
+demo.launch()

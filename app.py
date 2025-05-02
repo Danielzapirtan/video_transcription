@@ -8,7 +8,7 @@ import whisper
 import subprocess
 import traceback
 
-model = whisper.load_model("base")
+model = whisper.load_model("medium")
 
 def is_valid_youtube_url(url):
     if not url or not isinstance(url, str):

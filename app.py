@@ -64,4 +64,4 @@ with gr.Blocks() as demo:
         outputs=[output, download, timer_display]
     )
 
-demo.launch()
+demo.launch(debug=True)

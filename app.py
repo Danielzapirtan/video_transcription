@@ -15,7 +15,7 @@ def is_valid_youtube_url(url):
         return False
         
     youtube_regex = (
-        r'(https?://)?(www\.|m\.)?'
+        r'(https?://)?(www\.)?'
         r'(youtube|youtu|youtube-nocookie)\.(com|be)/'
         r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
     

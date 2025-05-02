@@ -157,7 +157,6 @@ with gr.Blocks(analytics_enabled=False) as demo:
         inputs=[video_input, url_input],
         outputs=[output, download, timer_display],
         api_name=False,  # Disable API endpoint creation
-        _js="() => {}"  # Empty JS function to prevent default form submission
     )
 
 if __name__ == "__main__":

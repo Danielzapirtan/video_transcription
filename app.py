@@ -32,7 +32,7 @@ def transcribe_youtube(url, model_name="small", language="en"):
     audio_file = next((f for f in os.listdir() if f.startswith("temp_audio")), None)
     
     if not audio_file:
-        return "Error: No audio file found."
+        return "Error: No audio file found.", "", None
 
     # Transcribe using Whisper
     model = load_model(model_name)
@@ -42,7 +42,14 @@ def transcribe_youtube(url, model_name="small", language="en"):
     os.remove(audio_file)
 
     elapsed_time = time.time() - start_time
-    return result["text"], elapsed_time
+    transcript = result["text"]
+
+    # Save transcript to file
+    transcript_filename = "transcription.txt"
+    with open(transcript_filename, "w", encoding="utf-8") as f:
+        f.write(transcript)
+
+    return transcript, elapsed_time, transcript_filename
 
 # Gradio UI
 with gr.Blocks() as demo:
@@ -55,11 +62,12 @@ with gr.Blocks() as demo:
     transcribe_button = gr.Button("Transcribe")
     output_text = gr.Textbox(label="Transcribed Text", interactive=False)
     timer_text = gr.Textbox(label="Processing Time (seconds)", interactive=False)
-    
+    download_button = gr.File(label="Download Transcript")
+
     transcribe_button.click(
         fn=transcribe_youtube,
         inputs=[url_input, model_selection, language_selection],
-        outputs=[output_text, timer_text]
+        outputs=[output_text, timer_text, download_button]
     )
 
 demo.launch()

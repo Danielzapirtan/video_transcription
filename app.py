@@ -69,4 +69,94 @@ def transcribe_video(video=None, youtube_url=None):
                     "• https://www.youtube.com/watch?v=VIDEO_ID\n"
                     "• https://m.youtube.com/watch?v=VIDEO_ID\n"
                     "• https://youtu.be/VIDEO_ID\n"
-                    "• https://m.youtu.be/VIDEO_ID
+                    "• https://m.youtu.be/VIDEO_ID", None, "0.00s")
+
+        start = time.time()
+        file_path = None
+        audio_path = None
+        txt_path = None
+
+        try:
+            if youtube_url:
+                print("Downloading YouTube audio...")
+                file_path = download_youtube_audio(youtube_url)
+            else:
+                if isinstance(video, dict) and "name" in video:
+                    file_path = video["name"]
+                elif isinstance(video, str):
+                    file_path = video
+                else:
+                    return "Invalid video input.", None, "0.00s"
+                print(f"Using uploaded file: {file_path}")
+
+            audio_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
+            print(f"Converting to WAV: {audio_path}")
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-i", file_path,
+                "-ar", "16000",
+                "-ac", "1",
+                "-acodec", "pcm_s16le",
+                "-y",
+                audio_path
+            ]
+            subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+            print("Starting transcription...")
+            result = model.transcribe(audio_path)
+            transcript = result["text"]
+            print("Transcription completed")
+
+            txt_path = tempfile.NamedTemporaryFile(delete=False, suffix=".txt").name
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(transcript)
+
+            elapsed = f"{time.time() - start:.2f}s"
+            print(f"Done! Time elapsed: {elapsed}")
+            return transcript, txt_path, elapsed
+
+        except subprocess.CalledProcessError as e:
+            err = e.stderr.decode('utf-8') if e.stderr else "Unknown ffmpeg error"
+            return f"Audio conversion failed: {err}", None, "0.00s"
+        except Exception as e:
+            print(f"Processing error: {str(e)}")
+            traceback.print_exc()
+            return f"Error: {str(e)}", None, "0.00s"
+        finally:
+            for path in [audio_path, file_path if youtube_url else None]:
+                if path and os.path.exists(path):
+                    try:
+                        os.remove(path)
+                        print(f"Deleted: {path}")
+                    except Exception as e:
+                        print(f"Error deleting {path}: {str(e)}")
+
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        traceback.print_exc()
+        return "Unexpected error occurred. Please check console for details.", None, "0.00s"
+
+with gr.Blocks() as demo:
+    gr.Markdown("# YouTube Video Transcription (Mobile Supported)")
+    with gr.Row():
+        video_input = gr.Video(label="Upload Video (or use YouTube URL below)")
+        url_input = gr.Textbox(
+            label="YouTube URL",
+            placeholder="https://m.youtube.com/watch?v=... or https://youtu.be/...",
+            info="Supports all YouTube URLs including mobile (m.)"
+        )
+    transcribe_btn = gr.Button("Transcribe", variant="primary")
+    with gr.Row():
+        output = gr.Textbox(label="Transcription", lines=10)
+        download = gr.File(label="Download Transcript")
+        timer_display = gr.Textbox(label="Processing Time")
+
+    transcribe_btn.click(
+        fn=transcribe_video,
+        inputs=[video_input, url_input],
+        outputs=[output, download, timer_display]
+    )
+
+if __name__ == "__main__":
+    print("Starting Gradio interface...")
+    demo.launch(debug=True)

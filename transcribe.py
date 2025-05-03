@@ -2,15 +2,14 @@ import whisper
 import yt_dlp
 import os
 import time
+import sys
 
 # Load the Whisper model
 def load_model(model_name="small"):
     return whisper.load_model(model_name)
 
-model = load_model()
-
 # Function to download video and transcribe
-def transcribe_youtube(url, model_name="medium", language="ro"):
+def transcribe_youtube(url, model_name="small", language="en"):
     start_time = time.time()
     
     # Download video using yt-dlp
@@ -31,9 +30,10 @@ def transcribe_youtube(url, model_name="medium", language="ro"):
     audio_file = next((f for f in os.listdir() if f.startswith("temp_audio")), None)
     
     if not audio_file:
-        return "Error: No audio file found."
+        print("Error: No audio file found.")
+        sys.exit(1)
 
-    # Transcribe using Whisper
+    # Load model and transcribe
     model = load_model(model_name)
     result = model.transcribe(audio_file, language=language)
 
@@ -48,14 +48,16 @@ def transcribe_youtube(url, model_name="medium", language="ro"):
     with open(transcript_filename, "w", encoding="utf-8") as f:
         f.write(transcript)
 
-    return transcript_filename
+    print(f"Transcription saved to {transcript_filename}")
+    print(f"Processing time: {elapsed_time:.2f} seconds")
 
 if __name__ == "__main__":
-    import sys
     if len(sys.argv) < 2:
-        print("Usage: python transcribe.py <YouTube URL>")
+        print("Usage: python transcribe.py <YouTube URL> [model_size] [language]")
         sys.exit(1)
 
     url = sys.argv[1]
-    output_file = transcribe_youtube(url)
-    print(f"Transcription saved to {output_file}")
+    model_size = sys.argv[2] if len(sys.argv) > 2 else "small"
+    language = sys.argv[3] if len(sys.argv) > 3 else "en"
+
+    transcribe_youtube(url, model_size, language)

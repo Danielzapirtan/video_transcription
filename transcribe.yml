@@ -8,12 +8,12 @@ on:
       model_size:
         description: 'Whisper Model Size (tiny, small, medium, large)'
         required: false
-        default: 'small'
+        default: 'large'
         type: string
       language:
         description: 'Language Code (e.g., en, fr, es)'
         required: false
-        default: 'en'
+        default: 'ro'
         type: string
 
 jobs:

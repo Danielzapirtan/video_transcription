@@ -3,3 +3,4 @@ youtube-transcript-api
 yt-dlp
 selenium
 torch
+browser-cookie3

@@ -56,8 +56,8 @@ if __name__ == "__main__":
         print("Usage: python transcribe.py <YouTube URL> [model_size] [language]")
         sys.exit(1)
 
-    url = sys.argv[1]
-    model_size = sys.argv[2] if len(sys.argv) > 2 else "small"
-    language = sys.argv[3] if len(sys.argv) > 3 else "en"
+    url = "https://www.youtube.com/watch?v=L-45RFSajXQ"
+    model_size = "large"
+    language = "ro"
 
     transcribe_youtube(url, model_size, language)

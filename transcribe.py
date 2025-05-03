@@ -2,7 +2,6 @@ import whisper
 import yt_dlp
 import os
 import time
-import sys
 
 # Load the Whisper model
 def load_model(model_name="small"):
@@ -31,7 +30,7 @@ def transcribe_youtube(url, model_name="small", language="en"):
     
     if not audio_file:
         print("Error: No audio file found.")
-        sys.exit(1)
+        return
 
     # Load model and transcribe
     model = load_model(model_name)
@@ -52,10 +51,9 @@ def transcribe_youtube(url, model_name="small", language="en"):
     print(f"Processing time: {elapsed_time:.2f} seconds")
 
 if __name__ == "__main__":
-    url = sys.argv[1]  #"https://www.youtube.com/watch?v=L-45RFSajXQ"
-    language = sys.argv[2]
-    model_size = "medium"
-    if language == "en":
-        model_size = "small"
-
+    url = input("Enter YouTube URL: ")
+    language = input("Enter language code (e.g., 'en', 'fr', 'es'): ")
+    
+    model_size = "medium" if language != "en" else "small"
+    
     transcribe_youtube(url, model_size, language)

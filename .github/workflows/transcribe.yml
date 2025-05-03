@@ -37,7 +37,7 @@ jobs:
         run: python transcribe.py "${{ inputs.youtube_url }}" "${{ inputs.model_size }}" "${{ inputs.language }}"
 
       - name: Upload transcription file
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: transcription
           path: transcription.txt

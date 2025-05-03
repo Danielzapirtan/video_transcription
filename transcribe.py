@@ -14,6 +14,7 @@ def transcribe_youtube(url, model_name="small", language="en", allow_cookies="y"
     start_time = time.time()
 
     # Load cookies automatically from Chrome or Edge
+    cookies = None
     try:
         if allow_cookies == "y":
             cookies = browser_cookie3.chrome()  # For Chrome

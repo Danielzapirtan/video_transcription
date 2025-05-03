@@ -53,7 +53,7 @@ def transcribe_youtube(url, model_name="small", language="en"):
 
 if __name__ == "__main__":
     url = "https://www.youtube.com/watch?v=L-45RFSajXQ"
-    model_size = "large"
+    model_size = "medium"
     language = "ro"
 
     transcribe_youtube(url, model_size, language)

@@ -1,7 +1,5 @@
-gradio
-yt_dlp
-pytube
 openai-whisper
-ffmpeg-python
+youtube-transcript-api
+yt-dlp
+selenium
 torch
-browser-cookie3

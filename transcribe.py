@@ -52,8 +52,10 @@ def transcribe_youtube(url, model_name="small", language="en"):
     print(f"Processing time: {elapsed_time:.2f} seconds")
 
 if __name__ == "__main__":
-    url = "https://www.youtube.com/watch?v=L-45RFSajXQ"
+    url = sys.argv[1]  #"https://www.youtube.com/watch?v=L-45RFSajXQ"
+    language = sys.argv[2]
     model_size = "medium"
-    language = "ro"
+    if language == "en":
+        model_size = "small"
 
     transcribe_youtube(url, model_size, language)

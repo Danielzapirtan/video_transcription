@@ -36,7 +36,8 @@ def transcribe_youtube(url, model_name="small", language="en", allow_cookies="y"
             'preferredcodec': 'mp3',
             'preferredquality': '192',
         }],
-        'cookiesfrombrowser': ('chrome',) if cookies else None,  # Pass cookies from Chrome if available
+        'cookiefile': '/home/daniel/yt/cookies.txt'
+        #'cookiesfrombrowser': ('chrome',) if cookies else None,  # Pass cookies from Chrome if available
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:

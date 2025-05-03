@@ -10,13 +10,14 @@ def load_model(model_name="small"):
     return whisper.load_model(model_name)
 
 # Function to download video and transcribe
-def transcribe_youtube(url, model_name="small", language="en"):
+def transcribe_youtube(url, model_name="small", language="en", allow_cookies="y"):
     start_time = time.time()
 
     # Load cookies automatically from Chrome or Edge
     try:
-        cookies = browser_cookie3.chrome()  # For Chrome
-        # cookies = browser_cookie3.edge()  # Uncomment for Edge
+        if allow_cookies == "y":
+            cookies = browser_cookie3.chrome()  # For Chrome
+            # cookies = browser_cookie3.edge()  # Uncomment for Edge
     except Exception as e:
         print(f"Error loading cookies: {e}")
         cookies = None
@@ -68,7 +69,8 @@ def transcribe_youtube(url, model_name="small", language="en"):
 if __name__ == "__main__":
     url = input("Enter YouTube URL: ")
     language = input("Enter language code (e.g., 'en', 'fr', 'es'): ")
+    allow_cookies = input("Do you want to use cookies for authentification (y/n)").strip().lower()
 
     model_size = "medium" if language != "en" else "small"
 
-    transcribe_youtube(url, model_size, language)
+    transcribe_youtube(url, model_size, language, allow_cookies)

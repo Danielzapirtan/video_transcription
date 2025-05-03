@@ -10,7 +10,7 @@ def load_model(model_name="small"):
 model = load_model()
 
 # Function to download video and transcribe
-def transcribe_youtube(url, model_name="small", language="en"):
+def transcribe_youtube(url, model_name="medium", language="ro"):
     start_time = time.time()
     
     # Download video using yt-dlp

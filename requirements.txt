@@ -4,3 +4,4 @@ pytube
 openai-whisper
 ffmpeg-python
 torch
+browser-cookies3

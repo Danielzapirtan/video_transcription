@@ -52,10 +52,6 @@ def transcribe_youtube(url, model_name="small", language="en"):
     print(f"Processing time: {elapsed_time:.2f} seconds")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python transcribe.py <YouTube URL> [model_size] [language]")
-        sys.exit(1)
-
     url = "https://www.youtube.com/watch?v=L-45RFSajXQ"
     model_size = "large"
     language = "ro"

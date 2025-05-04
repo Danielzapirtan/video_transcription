@@ -28,17 +28,28 @@ def transcribe_youtube(url, model_name="small", language="en", allow_cookies="y"
         print("Cookies loaded successfully.")
 
     # Download video using yt-dlp with cookies if available
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'outtmpl': 'temp_audio.%(ext)s',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'cookiefile': './cookies.txt'
-        #'cookiesfrombrowser': ('chrome',) if cookies else None,  # Pass cookies from Chrome if available
-    }
+    if allow_cookies == 'l':
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': 'temp_audio.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'cookiefile': './cookies.txt'
+        }
+    else:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': 'temp_audio.%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'cookiesfrombrowser': ('chrome',) if cookies else None,  # Pass cookies from Chrome if available
+        }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
@@ -71,7 +82,7 @@ def transcribe_youtube(url, model_name="small", language="en", allow_cookies="y"
 if __name__ == "__main__":
     url = input("Enter YouTube URL: ")
     language = input("Enter language code (e.g., 'en', 'fr', 'es'): ")
-    allow_cookies = input("Do you want to use cookies for authentification (y/n)").strip().lower()
+    allow_cookies = input("Do you want to use cookies for authentification (y/n/l)").strip().lower()
 
     model_size = "medium" if language != "en" else "small"
 

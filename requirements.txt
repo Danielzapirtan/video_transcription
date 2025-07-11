@@ -1,3 +1,5 @@
 gradio
 yt-dlp
 pytube
+openai-whisper
+

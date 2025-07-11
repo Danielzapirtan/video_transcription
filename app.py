@@ -1,278 +1,346 @@
-import React, { useState } from 'react';
-import { Play, Download, CheckCircle, AlertCircle, Loader2, Youtube, Chrome } from 'lucide-react';
+import gradio as gr
+import os
+from pytube import YouTube
+from pytube.exceptions import PytubeError, VideoUnavailable, RegexMatchError
+import yt_dlp
+import whisper
+import tempfile
+import traceback
+from pathlib import Path
+import re
 
-const VideoTranscriptionApp = () => {
-  const [formData, setFormData] = useState({
-    youtube_url: '',
-    confirm_cookies: false
-  });
-  const [isRunning, setIsRunning] = useState(false);
-  const [currentStep, setCurrentStep] = useState(0);
-  const [completed, setCompleted] = useState(false);
-  const [error, setError] = useState('');
+# Global variable to store the current model
+current_model = None
 
-  const steps = [
-    {
-      id: 'download_video',
-      title: 'Download YouTube Video',
-      description: 'Download YouTube video using yt-dlp with browser cookies',
-      command: `!yt-dlp --cookies-from-browser chrome "${formData.youtube_url}" -o video.mp4`,
-      duration: 5000
-    },
-    {
-      id: 'transcribe_audio',
-      title: 'Transcribe Audio',
-      description: 'Transcribe audio using OpenAI Whisper',
-      command: '!whisper video.mp4 --model medium --output_format txt',
-      duration: 8000
-    },
-    {
-      id: 'expose_transcript',
-      title: 'Prepare Download',
-      description: 'Make the transcription downloadable',
-      command: 'from google.colab import files\nfiles.download("video.txt")',
-      duration: 2000
-    }
-  ];
-
-  const validateForm = () => {
-    if (!formData.youtube_url.trim()) {
-      setError('YouTube URL is required');
-      return false;
-    }
+def load_whisper_model(model_size):
+    """Load or switch the Whisper model"""
+    global current_model
     
-    if (!formData.confirm_cookies) {
-      setError('You must agree to use Chrome cookies to proceed.');
-      return false;
-    }
+    # Only load if different from current model
+    if current_model is None or current_model.model_size != model_size:
+        print(f"Loading Whisper model: {model_size}")
+        current_model = whisper.load_model(model_size)
+    
+    return current_model
 
-    // Basic YouTube URL validation
-    const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
-    if (!youtubeRegex.test(formData.youtube_url)) {
-      setError('Please enter a valid YouTube URL');
-      return false;
-    }
+def is_valid_url(url):
+    """Basic URL validation"""
+    youtube_regex = (
+        r'(https?://)?(www\.)?'
+        '(youtube|youtu|youtube-nocookie)\.(com|be)/'
+        '(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
+    
+    generic_url_regex = (
+        r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|'
+        r'[!*\(\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+')
+    
+    return bool(re.match(youtube_regex, url) or re.match(generic_url_regex, url))
 
-    return true;
-  };
+def is_youtube_url(url):
+    return "youtube.com" in url or "youtu.be" in url
 
-  const runTranscription = async () => {
-    if (!validateForm()) return;
+def download_yt_with_pytube(video_url, temp_dir):
+    try:
+        yt = YouTube(video_url)
+        
+        # Check if video is available
+        if yt.vid_info.get('playabilityStatus', {}).get('status', '').lower() == 'error':
+            reason = yt.vid_info['playabilityStatus'].get('reason', 'Video unavailable')
+            raise VideoUnavailable(reason)
+        
+        # Skip live streams
+        if yt.vid_info.get('videoDetails', {}).get('isLive', False):
+            raise PytubeError("Live streams are not supported")
+        
+        audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+        if not audio_stream:
+            raise PytubeError("No audio stream available")
+        
+        output_file = "audio.mp3"
+        print(f"Downloading with pytube to: {os.path.join(temp_dir, output_file)}")
+        
+        # Download file (pytube might save as mp4 even if we request mp3)
+        audio_file_path = audio_stream.download(output_path=temp_dir, filename=output_file)
+        
+        # Ensure we return the correct path to the file that was actually downloaded
+        if not os.path.exists(audio_file_path):
+            # Check for alternate extensions
+            for ext in ['.mp4', '.webm', '.m4a']:
+                alt_path = os.path.join(temp_dir, f"audio{ext}")
+                if os.path.exists(alt_path):
+                    # Rename to expected .mp3 extension
+                    mp3_path = os.path.join(temp_dir, "audio.mp3")
+                    os.rename(alt_path, mp3_path)
+                    return mp3_path
+            
+            raise PytubeError("Downloaded file not found")
+        
+        return audio_file_path
+    except RegexMatchError:
+        raise gr.Error("Invalid YouTube URL format")
+    except VideoUnavailable as e:
+        raise gr.Error(f"YouTube video unavailable: {str(e)}")
+    except Exception as e:
+        traceback.print_exc()
+        raise gr.Error(f"Pytube error: {str(e)}")
 
-    setError('');
-    setIsRunning(true);
-    setCurrentStep(0);
-    setCompleted(false);
+def download_with_ytdlp(video_url, temp_dir):
+    try:
+        output_template = os.path.join(temp_dir, 'audio')
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+            'outtmpl': output_template,
+            'quiet': True,
+            'ignoreerrors': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'socket_timeout': 10,
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls']
+                }
+            }
+        }
+        
+        print(f"Attempting to download with yt-dlp: {video_url}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                info = ydl.extract_info(video_url, download=False)
+                if not info:
+                    raise gr.Error("Could not extract video info - the video may be private or restricted")
+                
+                # Skip live streams
+                if info.get('is_live', False):
+                    raise gr.Error("Live streams are not supported")
+                
+                if info.get('_type', 'video') != 'video':
+                    raise gr.Error("Only single videos are supported (not playlists)")
+                
+                print(f"Downloading with yt-dlp: {info.get('title', '')}")
+                ydl.download([video_url])
+            except yt_dlp.utils.DownloadError as e:
+                if "Private video" in str(e):
+                    raise gr.Error("This is a private video (login required)")
+                elif "Members-only" in str(e):
+                    raise gr.Error("This is a members-only video")
+                elif "This video is not available" in str(e):
+                    raise gr.Error("Video not available in your country or removed")
+                else:
+                    raise
+        
+        # Find the downloaded file
+        expected_file = output_template + '.mp3'
+        if os.path.exists(expected_file):
+            return expected_file
+            
+        # If the expected file isn't found, search for any audio file
+        for file in os.listdir(temp_dir):
+            if file.startswith("audio"):
+                return os.path.join(temp_dir, file)
+        
+        raise gr.Error("Failed to download audio - no valid file found")
+    except Exception as e:
+        traceback.print_exc()
+        if "unable to extract video info" in str(e).lower():
+            raise gr.Error("Could not access video info - the video may be private, age-restricted, or unavailable")
+        raise gr.Error(f"YT-DLP error: {str(e)}")
 
-    for (let i = 0; i < steps.length; i++) {
-      setCurrentStep(i);
-      await new Promise(resolve => setTimeout(resolve, steps[i].duration));
-    }
+def download_and_convert_to_mp3(video_url):
+    temp_dir = tempfile.mkdtemp()
+    
+    try:
+        if not is_valid_url(video_url):
+            raise gr.Error("Invalid URL format")
+        
+        if is_youtube_url(video_url):
+            try:
+                return download_yt_with_pytube(video_url, temp_dir)
+            except Exception as pytube_error:
+                print(f"Pytube failed, falling back to yt-dlp: {pytube_error}")
+                return download_with_ytdlp(video_url, temp_dir)
+        else:
+            return download_with_ytdlp(video_url, temp_dir)
+    except Exception as e:
+        # Clean up temp dir if error occurs
+        if os.path.exists(temp_dir):
+            for file in os.listdir(temp_dir):
+                try:
+                    os.remove(os.path.join(temp_dir, file))
+                except:
+                    pass
+            try:
+                os.rmdir(temp_dir)
+            except:
+                pass
+        raise
 
-    setCompleted(true);
-    setIsRunning(false);
-  };
+def transcribe_audio(audio_file_path, model_size, language):
+    if not audio_file_path or not os.path.exists(audio_file_path):
+        raise gr.Error("No valid audio file found")
+    
+    try:
+        # Load the appropriate model
+        model = load_whisper_model(model_size)
+        
+        # Set transcription options based on language selection
+        options = {}
+        if language != "auto":
+            options["language"] = language
+        
+        # Transcribe with the selected options
+        result = model.transcribe(audio_file_path, **options)
+        return result["text"]
+    except Exception as e:
+        traceback.print_exc()
+        raise gr.Error(f"Transcription failed: {str(e)}")
+    finally:
+        # Clean up the audio file and its directory
+        if audio_file_path and os.path.exists(audio_file_path):
+            temp_dir = os.path.dirname(audio_file_path)
+            try:
+                os.remove(audio_file_path)
+                # Only remove directory if it's empty
+                if not os.listdir(temp_dir):
+                    os.rmdir(temp_dir)
+            except:
+                pass
 
-  const handleInputChange = (field, value) => {
-    setFormData(prev => ({
-      ...prev,
-      [field]: value
-    }));
-    if (error) setError('');
-  };
+def process_video_url(video_url, model_size, language, progress=gr.Progress()):
+    try:
+        if not video_url.strip():
+            raise gr.Error("Please enter a video URL")
+        
+        progress(0.1, desc="Validating URL...")
+        
+        # Download audio
+        progress(0.3, desc="Downloading audio...")
+        audio_file = download_and_convert_to_mp3(video_url)
+        
+        # Transcribe
+        progress(0.6, desc=f"Loading {model_size} model...")
+        progress(0.7, desc=f"Transcribing audio in {language if language != 'auto' else 'auto-detected language'}...")
+        transcription = transcribe_audio(audio_file, model_size, language)
+        
+        progress(1.0, desc="Complete!")
+        return transcription
+    except gr.Error as e:
+        # Pass through Gradio errors directly
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise gr.Error(str(e))
 
-  const downloadTranscript = () => {
-    const transcript = `Video Transcription
-====================
+# Define language mapping for UI
+LANGUAGE_OPTIONS = {
+    "auto": "Auto-detect language",
+    "en": "English",
+    "ro": "Romanian",
+    "fr": "French", 
+    "de": "German"
+}
 
-Source: ${formData.youtube_url}
-Generated: ${new Date().toLocaleString()}
+# Create Gradio interface
+with gr.Blocks(title="Video Transcription", theme="soft") as app:
+    gr.Markdown("""
+    # 🎥 Video to Transcription
+    Convert YouTube or other video URLs to text using Whisper AI
+    
+    **Note**: 
+    - Live streams, private videos, and age-restricted videos may not work
+    - For YouTube links, tries pytube first, then falls back to yt-dlp
+    """)
+    
+    with gr.Row():
+        with gr.Column(scale=4):
+            video_url = gr.Textbox(
+                label="Video URL",
+                placeholder="https://www.youtube.com/watch?v=... or any video URL",
+                max_lines=1
+            )
+        with gr.Column(scale=1):
+            submit_btn = gr.Button("Transcribe", variant="primary")
+    
+    with gr.Row():
+        with gr.Column(scale=1):
+            model_dropdown = gr.Dropdown(
+                ["tiny", "base", "small", "medium", "large"],
+                value="base",
+                label="Whisper Model Size",
+                info="Larger models are more accurate but slower"
+            )
+        with gr.Column(scale=1):
+            language_dropdown = gr.Dropdown(
+                list(LANGUAGE_OPTIONS.keys()),
+                value="auto",
+                label="Language",
+                info="Select 'auto' to let Whisper detect the language"
+            )
+    
+    with gr.Row():
+        output_text = gr.Textbox(
+            label="Transcription",
+            interactive=True,
+            lines=10,
+            show_copy_button=True,
+            autoscroll=True
+        )
+    
+    with gr.Row():
+        gr.Examples(
+            examples=[
+                ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"],
+                ["https://www.youtube.com/watch?v=YQHsXMglC9A"],
+                ["https://www.youtube.com/watch?v=JGwWNGJdvx8"]
+            ],
+            inputs=video_url,
+            label="Try these examples (click to load)"
+        )
+    
+    # Display selected language name (not code)
+    language_dropdown.change(
+        fn=lambda lang: gr.Dropdown.update(info=f"Selected: {LANGUAGE_OPTIONS[lang]}"),
+        inputs=language_dropdown,
+        outputs=language_dropdown
+    )
+    
+    # Process button click
+    submit_btn.click(
+        fn=process_video_url,
+        inputs=[video_url, model_dropdown, language_dropdown],
+        outputs=output_text,
+    )
+    
+    # Add information about model sizes
+    gr.Markdown("""
+    ### About Model Sizes
+    - **tiny**: Fastest, lowest accuracy (1GB VRAM)
+    - **base**: Good balance for most cases (1GB VRAM)
+    - **small**: Better accuracy, medium speed (2GB VRAM)
+    - **medium**: High accuracy, slower (5GB VRAM)
+    - **large**: Highest accuracy, slowest (10GB VRAM)
+    
+    ### Supported Languages
+    Auto-detect, English, Romanian, French, and German
+    """)
 
-[This is a simulated transcript. In a real implementation, this would contain the actual transcribed text from the video.]
-
-Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.
-
-Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.
-
-Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto beatae vitae dicta sunt explicabo.`;
-
-    const blob = new Blob([transcript], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'video.txt';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div className="max-w-4xl mx-auto p-6 bg-gray-50 min-h-screen">
-      <div className="bg-white rounded-lg shadow-lg p-8">
-        <div className="text-center mb-8">
-          <div className="flex items-center justify-center mb-4">
-            <Youtube className="w-8 h-8 text-red-600 mr-2" />
-            <h1 className="text-3xl font-bold text-gray-800">Video Transcription Tool</h1>
-          </div>
-          <p className="text-gray-600">
-            CLI-style video transcription for Colab. Downloads YouTube videos and transcribes them using OpenAI Whisper.
-          </p>
-        </div>
-
-        {/* Input Form */}
-        <div className="mb-8 p-6 bg-gray-50 rounded-lg">
-          <h2 className="text-xl font-semibold mb-4 text-gray-800">Configuration</h2>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Enter the YouTube video URL: *
-              </label>
-              <input
-                type="url"
-                value={formData.youtube_url}
-                onChange={(e) => handleInputChange('youtube_url', e.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                disabled={isRunning}
-              />
-            </div>
-
-            <div className="flex items-start space-x-3">
-              <input
-                type="checkbox"
-                id="confirm_cookies"
-                checked={formData.confirm_cookies}
-                onChange={(e) => handleInputChange('confirm_cookies', e.target.checked)}
-                className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                disabled={isRunning}
-              />
-              <label htmlFor="confirm_cookies" className="text-sm text-gray-700">
-                <div className="flex items-center mb-1">
-                  <Chrome className="w-4 h-4 mr-1 text-blue-600" />
-                  <span className="font-medium">Chrome Cookie Authentication</span>
-                </div>
-                <p className="text-xs text-gray-500">
-                  Do you agree to authenticate using your Chrome cookies? (Required for private/age-restricted videos) *
-                </p>
-              </label>
-            </div>
-          </div>
-
-          {error && (
-            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-md flex items-center">
-              <AlertCircle className="w-5 h-5 text-red-500 mr-2" />
-              <span className="text-red-700 text-sm">{error}</span>
-            </div>
-          )}
-
-          <button
-            onClick={runTranscription}
-            disabled={isRunning || !formData.youtube_url.trim() || !formData.confirm_cookies}
-            className="mt-6 w-full bg-blue-600 text-white py-3 px-6 rounded-md font-medium hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center justify-center"
-          >
-            {isRunning ? (
-              <>
-                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                Processing...
-              </>
-            ) : (
-              <>
-                <Play className="w-5 h-5 mr-2" />
-                Start Transcription
-              </>
-            )}
-          </button>
-        </div>
-
-        {/* Execution Steps */}
-        {(isRunning || completed) && (
-          <div className="mb-8">
-            <h2 className="text-xl font-semibold mb-4 text-gray-800">Execution Progress</h2>
-            <div className="space-y-4">
-              {steps.map((step, index) => {
-                const isActive = isRunning && currentStep === index;
-                const isCompleted = completed || currentStep > index;
-                const isPending = !isRunning && !completed && currentStep <= index;
-
-                return (
-                  <div
-                    key={step.id}
-                    className={`p-4 rounded-lg border-2 transition-all ${
-                      isActive 
-                        ? 'border-blue-500 bg-blue-50' 
-                        : isCompleted 
-                        ? 'border-green-500 bg-green-50' 
-                        : 'border-gray-200 bg-gray-50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center">
-                        {isActive && <Loader2 className="w-5 h-5 text-blue-600 mr-2 animate-spin" />}
-                        {isCompleted && <CheckCircle className="w-5 h-5 text-green-600 mr-2" />}
-                        {isPending && <div className="w-5 h-5 border-2 border-gray-300 rounded-full mr-2"></div>}
-                        <h3 className="font-medium text-gray-800">{step.title}</h3>
-                      </div>
-                      <span className="text-sm text-gray-500">Step {index + 1}</span>
-                    </div>
-                    <p className="text-sm text-gray-600 mb-2">{step.description}</p>
-                    <div className="bg-gray-800 text-green-400 p-3 rounded font-mono text-sm overflow-x-auto">
-                      {step.command}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Download Section */}
-        {completed && (
-          <div className="p-6 bg-green-50 border border-green-200 rounded-lg">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-green-800 mb-2">Transcription Complete!</h3>
-                <p className="text-green-700">Your video has been successfully transcribed. Click below to download the transcript.</p>
-              </div>
-              <button
-                onClick={downloadTranscript}
-                className="bg-green-600 text-white py-2 px-4 rounded-md font-medium hover:bg-green-700 transition-colors flex items-center"
-              >
-                <Download className="w-5 h-5 mr-2" />
-                Download video.txt
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Requirements & Notes */}
-        <div className="mt-8 p-6 bg-gray-50 rounded-lg">
-          <h3 className="text-lg font-semibold mb-4 text-gray-800">Requirements & Notes</h3>
-          <div className="grid md:grid-cols-2 gap-6">
-            <div>
-              <h4 className="font-medium text-gray-700 mb-2">Required Dependencies:</h4>
-              <ul className="text-sm text-gray-600 space-y-1">
-                <li>• yt-dlp</li>
-                <li>• openai-whisper</li>
-                <li>• ffmpeg</li>
-                <li>• google.colab</li>
-              </ul>
-            </div>
-            <div>
-              <h4 className="font-medium text-gray-700 mb-2">Important Notes:</h4>
-              <ul className="text-sm text-gray-600 space-y-1">
-                <li>• Ensure Chrome is your default browser</li>
-                <li>• Medium/large Whisper models recommended for accuracy</li>
-                <li>• Output file will be named video.txt</li>
-                <li>• yt-dlp must be able to access Chrome cookies</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default VideoTranscriptionApp;
+if __name__ == "__main__":
+    # Check if yt-dlp is up to date
+    try:
+        with yt_dlp.YoutubeDL() as ydl:
+            ydl.update()
+    except:
+        print("Could not update yt-dlp, continuing with current version")
+    
+    # Pre-load the base model on startup
+    try:
+        load_whisper_model("base")
+    except Exception as e:
+        print(f"Warning: Failed to pre-load Whisper model: {e}")
+    
+    app.launch()

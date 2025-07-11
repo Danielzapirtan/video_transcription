@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import browser_cookie3
 import requests
+import shutil
 
 # Global variable to store the current model
 current_model = None
@@ -22,8 +23,11 @@ def load_whisper_model(model_size):
     # Only load if different from current model
     if current_model is None or current_model_size != model_size:
         print(f"Loading Whisper model: {model_size}")
-        current_model = whisper.load_model(model_size)
-        current_model_size = model_size
+        try:
+            current_model = whisper.load_model(model_size)
+            current_model_size = model_size
+        except Exception as e:
+            raise Exception(f"Failed to load Whisper model '{model_size}': {str(e)}")
     
     return current_model
 
@@ -31,9 +35,9 @@ def get_chrome_cookies():
     """Extract cookies from Chrome browser"""
     try:
         print("Extracting Chrome cookies...")
-        cookies = browser_cookie3.chrome(domain_name=None)
+        cookies = browser_cookie3.chrome(domain_name='youtube.com')
         cookie_list = list(cookies)
-        print(f"Successfully extracted {len(cookie_list)} cookies from Chrome")
+        print(f"Successfully extracted {len(cookie_list)} YouTube cookies from Chrome")
         return cookie_list
     except Exception as e:
         print(f"Warning: Could not extract Chrome cookies: {e}")
@@ -76,10 +80,10 @@ def download_yt_with_pytube(video_url, temp_dir, cookies=None):
         if not audio_stream:
             raise PytubeError("No audio stream available")
         
-        output_file = "audio.mp3"
+        output_file = "audio"
         print(f"Downloading with pytube...")
         
-        # Download file (pytube might save as mp4 even if we request mp3)
+        # Download file
         audio_file_path = audio_stream.download(output_path=temp_dir, filename=output_file)
         
         # Ensure we return the correct path to the file that was actually downloaded
@@ -88,10 +92,7 @@ def download_yt_with_pytube(video_url, temp_dir, cookies=None):
             for ext in ['.mp4', '.webm', '.m4a']:
                 alt_path = os.path.join(temp_dir, f"audio{ext}")
                 if os.path.exists(alt_path):
-                    # Rename to expected .mp3 extension
-                    mp3_path = os.path.join(temp_dir, "audio.mp3")
-                    os.rename(alt_path, mp3_path)
-                    return mp3_path
+                    return alt_path
             
             raise PytubeError("Downloaded file not found")
         
@@ -105,7 +106,7 @@ def download_yt_with_pytube(video_url, temp_dir, cookies=None):
 
 def download_with_ytdlp(video_url, temp_dir, cookies=None):
     try:
-        output_template = os.path.join(temp_dir, 'audio')
+        output_template = os.path.join(temp_dir, 'audio.%(ext)s')
         
         ydl_opts = {
             'format': 'bestaudio/best',
@@ -116,10 +117,10 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
             }],
             'outtmpl': output_template,
             'quiet': True,
-            'ignoreerrors': True,
             'no_warnings': True,
             'extract_flat': False,
-            'socket_timeout': 10,
+            'socket_timeout': 30,
+            'retries': 3,
             'extractor_args': {
                 'youtube': {
                     'skip': ['dash', 'hls']
@@ -128,21 +129,25 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
         }
         
         # Add cookies if available
+        cookie_file_path = None
         if cookies:
             print("Using Chrome cookies for authentication...")
             # Create a temporary cookie file
-            import tempfile
-            import json
-            cookie_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-            
-            # Convert cookies to Netscape format
-            for cookie in cookies:
-                if hasattr(cookie, 'domain') and hasattr(cookie, 'name'):
-                    cookie_line = f"{cookie.domain}\tTRUE\t{cookie.path}\t{'TRUE' if cookie.secure else 'FALSE'}\t{cookie.expires or 0}\t{cookie.name}\t{cookie.value}\n"
-                    cookie_file.write(cookie_line)
-            
-            cookie_file.close()
-            ydl_opts['cookiefile'] = cookie_file.name
+            try:
+                cookie_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+                cookie_file_path = cookie_file.name
+                
+                # Convert cookies to Netscape format
+                cookie_file.write("# Netscape HTTP Cookie File\n")
+                for cookie in cookies:
+                    if hasattr(cookie, 'domain') and hasattr(cookie, 'name'):
+                        cookie_line = f"{cookie.domain}\t{'TRUE' if cookie.domain.startswith('.') else 'FALSE'}\t{cookie.path}\t{'TRUE' if cookie.secure else 'FALSE'}\t{cookie.expires or 0}\t{cookie.name}\t{cookie.value}\n"
+                        cookie_file.write(cookie_line)
+                
+                cookie_file.close()
+                ydl_opts['cookiefile'] = cookie_file_path
+            except Exception as e:
+                print(f"Warning: Could not create cookie file: {e}")
         
         print(f"Downloading with yt-dlp...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -167,30 +172,33 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
                 
                 ydl.download([video_url])
             except yt_dlp.utils.DownloadError as e:
-                if "Private video" in str(e):
+                error_str = str(e)
+                if "Private video" in error_str:
                     raise Exception("This is a private video (login required)")
-                elif "Members-only" in str(e):
+                elif "Members-only" in error_str:
                     raise Exception("This is a members-only video")
-                elif "This video is not available" in str(e):
+                elif "This video is not available" in error_str:
                     raise Exception("Video not available in your country or removed")
+                elif "Sign in to confirm your age" in error_str:
+                    raise Exception("Age-restricted video - cookies may be needed")
                 else:
-                    raise
+                    raise Exception(f"Download error: {error_str}")
             finally:
                 # Clean up cookie file if it was created
-                if cookies and 'cookiefile' in ydl_opts:
+                if cookie_file_path and os.path.exists(cookie_file_path):
                     try:
-                        os.unlink(ydl_opts['cookiefile'])
+                        os.unlink(cookie_file_path)
                     except:
                         pass
         
         # Find the downloaded file
-        expected_file = output_template + '.mp3'
+        expected_file = os.path.join(temp_dir, 'audio.mp3')
         if os.path.exists(expected_file):
             return expected_file
             
         # If the expected file isn't found, search for any audio file
         for file in os.listdir(temp_dir):
-            if file.startswith("audio"):
+            if file.startswith("audio") and file.endswith(('.mp3', '.mp4', '.webm', '.m4a')):
                 return os.path.join(temp_dir, file)
         
         raise Exception("Failed to download audio - no valid file found")
@@ -210,34 +218,40 @@ def download_and_convert_to_mp3(video_url, cookies=None):
             try:
                 return download_yt_with_pytube(video_url, temp_dir, cookies)
             except Exception as pytube_error:
-                print(f"Pytube failed, trying yt-dlp...")
+                print(f"Pytube failed: {pytube_error}")
+                print("Trying yt-dlp...")
                 return download_with_ytdlp(video_url, temp_dir, cookies)
         else:
             return download_with_ytdlp(video_url, temp_dir, cookies)
     except Exception as e:
         # Clean up temp dir if error occurs
-        if os.path.exists(temp_dir):
-            for file in os.listdir(temp_dir):
-                try:
-                    os.remove(os.path.join(temp_dir, file))
-                except:
-                    pass
-            try:
-                os.rmdir(temp_dir)
-            except:
-                pass
+        cleanup_temp_dir(temp_dir)
         raise
+
+def cleanup_temp_dir(temp_dir):
+    """Safely cleanup temporary directory"""
+    if os.path.exists(temp_dir):
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception as e:
+            print(f"Warning: Could not clean up temp directory {temp_dir}: {e}")
 
 def transcribe_audio(audio_file_path, model_size, language):
     if not audio_file_path or not os.path.exists(audio_file_path):
         raise Exception("No valid audio file found")
+    
+    temp_dir = os.path.dirname(audio_file_path)
     
     try:
         # Load the appropriate model
         model = load_whisper_model(model_size)
         
         # Set transcription options based on language selection
-        options = {}
+        options = {
+            'fp16': False,  # Disable half precision for better compatibility
+            'verbose': False
+        }
+        
         if language and language != "auto":
             options["language"] = language
         
@@ -257,19 +271,11 @@ def transcribe_audio(audio_file_path, model_size, language):
         
         return result["text"]
     except Exception as e:
-        traceback.print_exc()
+        print(f"Transcription error details: {traceback.format_exc()}")
         raise Exception(f"Transcription failed: {str(e)}")
     finally:
-        # Clean up the audio file and its directory
-        if audio_file_path and os.path.exists(audio_file_path):
-            temp_dir = os.path.dirname(audio_file_path)
-            try:
-                os.remove(audio_file_path)
-                # Only remove directory if it's empty
-                if not os.listdir(temp_dir):
-                    os.rmdir(temp_dir)
-            except:
-                pass
+        # Clean up the temp directory
+        cleanup_temp_dir(temp_dir)
 
 def get_user_input():
     """Interactive CLI to get user preferences"""
@@ -301,19 +307,39 @@ def get_user_input():
     
     # Get language preference
     while True:
-        language = input("\nEnter language code (ro/en): ").strip().lower()
-        if language in ['ro', 'en']:
+        language = input("\nEnter language code (auto/ro/en): ").strip().lower()
+        if language in ['auto', 'ro', 'en']:
             break
         else:
-            print("Please enter 'ro' for Romanian or 'en' for English")
+            print("Please enter 'auto' for auto-detect, 'ro' for Romanian, or 'en' for English")
     
-    # Determine model size based on language
-    if language == 'en':
-        model_size = 'base'
-        print(f"\nUsing 'base' model for English")
-    else:  # Romanian
-        model_size = 'medium'
-        print(f"\nUsing 'medium' model for Romanian")
+    # Get model size preference
+    while True:
+        print("\nAvailable models:")
+        print("1. tiny - Fastest, least accurate")
+        print("2. base - Good balance (recommended)")
+        print("3. small - Better accuracy")
+        print("4. medium - High accuracy")
+        print("5. large - Highest accuracy, slowest")
+        
+        choice = input("Select model (1-5) or press Enter for auto-selection: ").strip()
+        
+        if choice == '':
+            # Auto-select based on language
+            if language == 'en':
+                model_size = 'base'
+                print(f"Auto-selected 'base' model for English")
+            else:
+                model_size = 'medium'
+                print(f"Auto-selected 'medium' model for better multilingual support")
+            break
+        elif choice in ['1', '2', '3', '4', '5']:
+            models = ['tiny', 'base', 'small', 'medium', 'large']
+            model_size = models[int(choice) - 1]
+            print(f"Selected '{model_size}' model")
+            break
+        else:
+            print("Please enter a number 1-5 or press Enter")
     
     return url, use_cookies, language, model_size
 
@@ -329,6 +355,8 @@ def save_transcription(text, url):
                     video_id = url.split('/')[-1].split('?')[0].split('&')[0]
                     if '=' in video_id:
                         video_id = video_id.split('=')[-1]
+                    # Clean video ID for filename
+                    video_id = re.sub(r'[^\w\-_]', '', video_id)
                     default_filename = f"transcript_{video_id}.txt"
                 else:
                     default_filename = "transcript.txt"
@@ -338,6 +366,10 @@ def save_transcription(text, url):
             filename = input(f"Enter filename ({default_filename}): ").strip()
             if not filename:
                 filename = default_filename
+            
+            # Ensure .txt extension
+            if not filename.endswith('.txt'):
+                filename += '.txt'
             
             try:
                 with open(filename, 'w', encoding='utf-8') as f:
@@ -352,9 +384,47 @@ def save_transcription(text, url):
         else:
             print("Please enter Y or n")
 
+def check_dependencies():
+    """Check if all required dependencies are available"""
+    missing = []
+    
+    try:
+        import whisper
+    except ImportError:
+        missing.append("openai-whisper")
+    
+    try:
+        import yt_dlp
+    except ImportError:
+        missing.append("yt-dlp")
+    
+    try:
+        import pytube
+    except ImportError:
+        missing.append("pytube")
+    
+    try:
+        import browser_cookie3
+    except ImportError:
+        missing.append("browser_cookie3")
+    
+    if missing:
+        print("❌ Missing dependencies:")
+        for dep in missing:
+            print(f"   - {dep}")
+        print("\nPlease install missing dependencies:")
+        print(f"pip install {' '.join(missing)}")
+        return False
+    
+    return True
+
 def main():
     """Main interactive function"""
     try:
+        # Check dependencies first
+        if not check_dependencies():
+            sys.exit(1)
+        
         # Get user input
         url, use_cookies, language, model_size = get_user_input()
         
@@ -410,23 +480,4 @@ def main():
 
 if __name__ == "__main__":
     print("🚀 Starting Video Transcription Tool...")
-    
-    # Check dependencies
-    try:
-        import browser_cookie3
-    except ImportError:
-        print("❌ Missing dependency: browser_cookie3")
-        print("Please install: pip install browser_cookie3")
-        sys.exit(1)
-    
-    # Check if yt-dlp is available
-    try:
-        print("🔄 Checking yt-dlp...")
-        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
-            pass
-        print("✅ yt-dlp is ready")
-    except Exception as e:
-        print(f"⚠️  yt-dlp warning: {e}")
-    
-    print()
     main()

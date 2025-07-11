@@ -499,8 +499,13 @@ def main():
         print(transcription)
         print("\n" + "=" * 50)
         
-        # Ask to save
-        save_transcription(transcription, url)
+        # Save transcription to file
+        try:
+            with open('transcription.txt', 'w', encoding='utf-8') as f:
+                f.write(transcription)
+            print("✅ Transcription saved to: transcription.txt")
+        except Exception as e:
+            print(f"❌ Error saving transcription: {e}")
         
         print("\n✅ Process completed successfully!")
         

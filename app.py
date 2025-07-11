@@ -24,12 +24,46 @@ def load_whisper_model(model_size):
     if current_model is None or current_model_size != model_size:
         print(f"Loading Whisper model: {model_size}")
         try:
+            # This is the correct way to load a Whisper model
             current_model = whisper.load_model(model_size)
             current_model_size = model_size
+            print(f"✅ Successfully loaded {model_size} model")
         except Exception as e:
             raise Exception(f"Failed to load Whisper model '{model_size}': {str(e)}")
     
     return current_model
+
+def check_whisper_installation():
+    """Check if Whisper is properly installed and working"""
+    try:
+        import whisper
+        print(f"Whisper version: {whisper.__version__}")
+        
+        # Test if load_model function exists
+        if not hasattr(whisper, 'load_model'):
+            raise AttributeError("whisper module doesn't have load_model function")
+        
+        # Try to load the smallest model as a test
+        print("Testing Whisper installation...")
+        test_model = whisper.load_model("tiny")
+        print("✅ Whisper is working correctly")
+        return True
+        
+    except ImportError:
+        print("❌ Whisper is not installed")
+        print("Install with: pip install openai-whisper")
+        return False
+    except AttributeError as e:
+        print(f"❌ Whisper installation issue: {e}")
+        print("Try reinstalling: pip uninstall openai-whisper && pip install openai-whisper")
+        return False
+    except Exception as e:
+        print(f"❌ Whisper test failed: {e}")
+        print("This might be due to:")
+        print("1. Missing FFmpeg - install from https://ffmpeg.org/")
+        print("2. Insufficient disk space for model download")
+        print("3. Network connectivity issues")
+        return False
 
 def get_chrome_cookies():
     """Extract cookies from Chrome browser"""
@@ -388,9 +422,8 @@ def check_dependencies():
     """Check if all required dependencies are available"""
     missing = []
     
-    try:
-        import whisper
-    except ImportError:
+    # Check Whisper specifically
+    if not check_whisper_installation():
         missing.append("openai-whisper")
     
     try:
@@ -409,10 +442,10 @@ def check_dependencies():
         missing.append("browser_cookie3")
     
     if missing:
-        print("❌ Missing dependencies:")
+        print("❌ Missing or broken dependencies:")
         for dep in missing:
             print(f"   - {dep}")
-        print("\nPlease install missing dependencies:")
+        print("\nPlease install/fix missing dependencies:")
         print(f"pip install {' '.join(missing)}")
         return False
     

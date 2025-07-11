@@ -1,6 +1,5 @@
 import os
 import sys
-import argparse
 from pytube import YouTube
 from pytube.exceptions import PytubeError, VideoUnavailable, RegexMatchError
 import yt_dlp
@@ -14,15 +13,17 @@ import requests
 
 # Global variable to store the current model
 current_model = None
+current_model_size = None
 
 def load_whisper_model(model_size):
     """Load or switch the Whisper model"""
-    global current_model
+    global current_model, current_model_size
     
     # Only load if different from current model
-    if current_model is None or current_model.model_size != model_size:
+    if current_model is None or current_model_size != model_size:
         print(f"Loading Whisper model: {model_size}")
         current_model = whisper.load_model(model_size)
+        current_model_size = model_size
     
     return current_model
 
@@ -31,8 +32,9 @@ def get_chrome_cookies():
     try:
         print("Extracting Chrome cookies...")
         cookies = browser_cookie3.chrome(domain_name=None)
-        print(f"Successfully extracted {len(list(cookies))} cookies from Chrome")
-        return cookies
+        cookie_list = list(cookies)
+        print(f"Successfully extracted {len(cookie_list)} cookies from Chrome")
+        return cookie_list
     except Exception as e:
         print(f"Warning: Could not extract Chrome cookies: {e}")
         print("You may need to:")
@@ -59,7 +61,6 @@ def is_youtube_url(url):
 
 def download_yt_with_pytube(video_url, temp_dir, cookies=None):
     try:
-        # If cookies are available, try to use them (limited support in pytube)
         yt = YouTube(video_url)
         
         # Check if video is available
@@ -76,7 +77,7 @@ def download_yt_with_pytube(video_url, temp_dir, cookies=None):
             raise PytubeError("No audio stream available")
         
         output_file = "audio.mp3"
-        print(f"Downloading with pytube to: {os.path.join(temp_dir, output_file)}")
+        print(f"Downloading with pytube...")
         
         # Download file (pytube might save as mp4 even if we request mp3)
         audio_file_path = audio_stream.download(output_path=temp_dir, filename=output_file)
@@ -100,7 +101,6 @@ def download_yt_with_pytube(video_url, temp_dir, cookies=None):
     except VideoUnavailable as e:
         raise Exception(f"YouTube video unavailable: {str(e)}")
     except Exception as e:
-        traceback.print_exc()
         raise Exception(f"Pytube error: {str(e)}")
 
 def download_with_ytdlp(video_url, temp_dir, cookies=None):
@@ -115,9 +115,9 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
                 'preferredquality': '192',
             }],
             'outtmpl': output_template,
-            'quiet': False,
+            'quiet': True,
             'ignoreerrors': True,
-            'no_warnings': False,
+            'no_warnings': True,
             'extract_flat': False,
             'socket_timeout': 10,
             'extractor_args': {
@@ -130,13 +130,21 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
         # Add cookies if available
         if cookies:
             print("Using Chrome cookies for authentication...")
-            # Convert cookies to the format yt-dlp expects
-            cookie_jar = requests.cookies.RequestsCookieJar()
+            # Create a temporary cookie file
+            import tempfile
+            import json
+            cookie_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+            
+            # Convert cookies to Netscape format
             for cookie in cookies:
-                cookie_jar.set(cookie.name, cookie.value, domain=cookie.domain)
-            ydl_opts['cookiejar'] = cookie_jar
+                if hasattr(cookie, 'domain') and hasattr(cookie, 'name'):
+                    cookie_line = f"{cookie.domain}\tTRUE\t{cookie.path}\t{'TRUE' if cookie.secure else 'FALSE'}\t{cookie.expires or 0}\t{cookie.name}\t{cookie.value}\n"
+                    cookie_file.write(cookie_line)
+            
+            cookie_file.close()
+            ydl_opts['cookiefile'] = cookie_file.name
         
-        print(f"Attempting to download with yt-dlp: {video_url}")
+        print(f"Downloading with yt-dlp...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 info = ydl.extract_info(video_url, download=False)
@@ -151,8 +159,12 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
                     raise Exception("Only single videos are supported (not playlists)")
                 
                 print(f"Video title: {info.get('title', 'Unknown')}")
-                print(f"Duration: {info.get('duration', 'Unknown')} seconds")
-                print("Downloading audio...")
+                duration = info.get('duration', 0)
+                if duration:
+                    minutes = duration // 60
+                    seconds = duration % 60
+                    print(f"Duration: {minutes}:{seconds:02d}")
+                
                 ydl.download([video_url])
             except yt_dlp.utils.DownloadError as e:
                 if "Private video" in str(e):
@@ -163,6 +175,13 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
                     raise Exception("Video not available in your country or removed")
                 else:
                     raise
+            finally:
+                # Clean up cookie file if it was created
+                if cookies and 'cookiefile' in ydl_opts:
+                    try:
+                        os.unlink(ydl_opts['cookiefile'])
+                    except:
+                        pass
         
         # Find the downloaded file
         expected_file = output_template + '.mp3'
@@ -176,7 +195,6 @@ def download_with_ytdlp(video_url, temp_dir, cookies=None):
         
         raise Exception("Failed to download audio - no valid file found")
     except Exception as e:
-        traceback.print_exc()
         if "unable to extract video info" in str(e).lower():
             raise Exception("Could not access video info - the video may be private, age-restricted, or unavailable")
         raise Exception(f"YT-DLP error: {str(e)}")
@@ -192,7 +210,7 @@ def download_and_convert_to_mp3(video_url, cookies=None):
             try:
                 return download_yt_with_pytube(video_url, temp_dir, cookies)
             except Exception as pytube_error:
-                print(f"Pytube failed, falling back to yt-dlp: {pytube_error}")
+                print(f"Pytube failed, trying yt-dlp...")
                 return download_with_ytdlp(video_url, temp_dir, cookies)
         else:
             return download_with_ytdlp(video_url, temp_dir, cookies)
@@ -216,23 +234,24 @@ def transcribe_audio(audio_file_path, model_size, language):
     
     try:
         # Load the appropriate model
-        print(f"Loading Whisper model: {model_size}")
         model = load_whisper_model(model_size)
         
         # Set transcription options based on language selection
         options = {}
         if language and language != "auto":
             options["language"] = language
-            print(f"Transcribing in {language}")
-        else:
-            print("Auto-detecting language")
         
-        print("Starting transcription...")
+        print(f"Transcribing audio using {model_size} model...")
+        if language and language != "auto":
+            print(f"Language set to: {language}")
+        else:
+            print("Auto-detecting language...")
+        
         # Transcribe with the selected options
         result = model.transcribe(audio_file_path, **options)
         
         # Print detected language if auto-detect was used
-        if language == "auto" or not language:
+        if not language or language == "auto":
             detected_lang = result.get("language", "unknown")
             print(f"Detected language: {detected_lang}")
         
@@ -252,18 +271,100 @@ def transcribe_audio(audio_file_path, model_size, language):
             except:
                 pass
 
-def process_video_url(video_url, model_size="base", language="auto", use_cookies=True):
+def get_user_input():
+    """Interactive CLI to get user preferences"""
+    print("🎥 Video Transcription Tool")
+    print("=" * 50)
+    
+    # Get video URL
+    while True:
+        url = input("\nEnter video URL: ").strip()
+        if not url:
+            print("Please enter a valid URL")
+            continue
+        if not is_valid_url(url):
+            print("Invalid URL format. Please enter a valid video URL.")
+            continue
+        break
+    
+    # Get cookie authentication preference
+    while True:
+        use_cookies = input("\nAuthenticate with Chrome cookies? (Y/n): ").strip().lower()
+        if use_cookies in ['', 'y', 'yes']:
+            use_cookies = True
+            break
+        elif use_cookies in ['n', 'no']:
+            use_cookies = False
+            break
+        else:
+            print("Please enter Y or n")
+    
+    # Get language preference
+    while True:
+        language = input("\nEnter language code (ro/en): ").strip().lower()
+        if language in ['ro', 'en']:
+            break
+        else:
+            print("Please enter 'ro' for Romanian or 'en' for English")
+    
+    # Determine model size based on language
+    if language == 'en':
+        model_size = 'base'
+        print(f"\nUsing 'base' model for English")
+    else:  # Romanian
+        model_size = 'medium'
+        print(f"\nUsing 'medium' model for Romanian")
+    
+    return url, use_cookies, language, model_size
+
+def save_transcription(text, url):
+    """Ask user if they want to save the transcription"""
+    while True:
+        save = input("\nSave transcription to file? (Y/n): ").strip().lower()
+        if save in ['', 'y', 'yes']:
+            # Generate default filename
+            try:
+                # Try to extract video ID for filename
+                if 'youtube.com' in url or 'youtu.be' in url:
+                    video_id = url.split('/')[-1].split('?')[0].split('&')[0]
+                    if '=' in video_id:
+                        video_id = video_id.split('=')[-1]
+                    default_filename = f"transcript_{video_id}.txt"
+                else:
+                    default_filename = "transcript.txt"
+            except:
+                default_filename = "transcript.txt"
+            
+            filename = input(f"Enter filename ({default_filename}): ").strip()
+            if not filename:
+                filename = default_filename
+            
+            try:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                print(f"✅ Transcription saved to: {filename}")
+                return True
+            except Exception as e:
+                print(f"❌ Error saving file: {e}")
+                return False
+        elif save in ['n', 'no']:
+            return False
+        else:
+            print("Please enter Y or n")
+
+def main():
+    """Main interactive function"""
     try:
-        if not video_url.strip():
-            raise Exception("Please provide a video URL")
+        # Get user input
+        url, use_cookies, language, model_size = get_user_input()
         
-        print("=" * 60)
-        print("VIDEO TRANSCRIPTION STARTED")
-        print("=" * 60)
-        print(f"URL: {video_url}")
-        print(f"Model: {model_size}")
+        print("\n" + "=" * 50)
+        print("PROCESSING VIDEO")
+        print("=" * 50)
+        print(f"URL: {url}")
         print(f"Language: {language}")
-        print(f"Use cookies: {use_cookies}")
+        print(f"Model: {model_size}")
+        print(f"Use cookies: {'Yes' if use_cookies else 'No'}")
         print()
         
         # Get Chrome cookies if requested
@@ -271,108 +372,61 @@ def process_video_url(video_url, model_size="base", language="auto", use_cookies
         if use_cookies:
             cookies = get_chrome_cookies()
             if not cookies:
-                print("Warning: Could not extract cookies. Some videos may not be accessible.")
+                print("⚠️  Warning: Could not extract cookies. Some videos may not be accessible.")
+                print()
         
-        print("Validating URL...")
-        if not is_valid_url(video_url):
+        # Validate URL
+        print("🔍 Validating URL...")
+        if not is_valid_url(url):
             raise Exception("Invalid URL format")
         
         # Download audio
-        print("Downloading audio...")
-        audio_file = download_and_convert_to_mp3(video_url, cookies)
-        print(f"Audio downloaded to: {audio_file}")
+        print("📥 Downloading audio...")
+        audio_file = download_and_convert_to_mp3(url, cookies)
+        print("✅ Audio downloaded successfully")
         
         # Transcribe
-        print("Transcribing audio...")
+        print("🎯 Starting transcription...")
         transcription = transcribe_audio(audio_file, model_size, language)
         
-        print()
-        print("=" * 60)
+        # Display results
+        print("\n" + "=" * 50)
         print("TRANSCRIPTION COMPLETE")
-        print("=" * 60)
+        print("=" * 50)
         print(transcription)
-        print()
-        print("=" * 60)
+        print("\n" + "=" * 50)
         
-        return transcription
+        # Ask to save
+        save_transcription(transcription, url)
+        
+        print("\n✅ Process completed successfully!")
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Process interrupted by user")
+        sys.exit(1)
     except Exception as e:
-        print(f"Error: {str(e)}")
-        return None
-
-def main():
-    parser = argparse.ArgumentParser(description="Video Transcription with Chrome Cookie Authentication")
-    parser.add_argument("url", help="Video URL to transcribe")
-    parser.add_argument("-m", "--model", 
-                       choices=["tiny", "base", "small", "medium", "large"],
-                       default="base",
-                       help="Whisper model size (default: base)")
-    parser.add_argument("-l", "--language",
-                       choices=["auto", "en", "ro", "fr", "de"],
-                       default="auto",
-                       help="Language for transcription (default: auto)")
-    parser.add_argument("--no-cookies", action="store_true",
-                       help="Don't use Chrome cookies for authentication")
-    parser.add_argument("-o", "--output", 
-                       help="Output file to save transcription (optional)")
-    
-    args = parser.parse_args()
-    
-    # Process the video
-    result = process_video_url(
-        args.url, 
-        args.model, 
-        args.language, 
-        not args.no_cookies
-    )
-    
-    # Save to file if requested
-    if result and args.output:
-        try:
-            with open(args.output, 'w', encoding='utf-8') as f:
-                f.write(result)
-            print(f"Transcription saved to: {args.output}")
-        except Exception as e:
-            print(f"Error saving to file: {e}")
+        print(f"\n❌ Error: {str(e)}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    print("Video Transcription Tool with Chrome Cookie Authentication")
-    print("=" * 60)
+    print("🚀 Starting Video Transcription Tool...")
     
-    # Check if yt-dlp is up to date
+    # Check dependencies
     try:
-        print("Checking yt-dlp version...")
-        with yt_dlp.YoutubeDL() as ydl:
-            ydl.update()
-        print("yt-dlp is up to date")
-    except:
-        print("Could not update yt-dlp, continuing with current version")
+        import browser_cookie3
+    except ImportError:
+        print("❌ Missing dependency: browser_cookie3")
+        print("Please install: pip install browser_cookie3")
+        sys.exit(1)
+    
+    # Check if yt-dlp is available
+    try:
+        print("🔄 Checking yt-dlp...")
+        with yt_dlp.YoutubeDL({'quiet': True}) as ydl:
+            pass
+        print("✅ yt-dlp is ready")
+    except Exception as e:
+        print(f"⚠️  yt-dlp warning: {e}")
     
     print()
-    
-    if len(sys.argv) == 1:
-        print("Usage:")
-        print("  python transcribe.py <video_url> [options]")
-        print()
-        print("Examples:")
-        print("  python transcribe.py 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'")
-        print("  python transcribe.py 'https://youtu.be/dQw4w9WgXcQ' -m large -l en")
-        print("  python transcribe.py 'https://youtu.be/dQw4w9WgXcQ' -o transcript.txt")
-        print("  python transcribe.py 'https://youtu.be/dQw4w9WgXcQ' --no-cookies")
-        print()
-        print("Options:")
-        print("  -m, --model     Whisper model size: tiny, base, small, medium, large")
-        print("  -l, --language  Language: auto, en, ro, fr, de")
-        print("  -o, --output    Output file to save transcription")
-        print("  --no-cookies    Don't use Chrome cookies")
-        print()
-        print("Model sizes:")
-        print("  tiny   - Fastest, lowest accuracy (1GB VRAM)")
-        print("  base   - Good balance for most cases (1GB VRAM)")
-        print("  small  - Better accuracy, medium speed (2GB VRAM)")
-        print("  medium - High accuracy, slower (5GB VRAM)")
-        print("  large  - Highest accuracy, slowest (10GB VRAM)")
-        print()
-        print("Note: Chrome cookies are used by default for accessing private/restricted videos.")
-        print("      Make sure Chrome is closed before running this script.")
-    else:
-        main()
+    main()

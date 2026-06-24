@@ -306,6 +306,7 @@ def transcribe_audio(audio_file_path, model_size, language):
         
         # Add output format as text
         cmd.extend(['--output_format', 'txt'])
+	cmd.extend(['--hf_token', os.getenv('HF_TOKEN')])
         
         # Create output directory
         output_dir = tempfile.mkdtemp()

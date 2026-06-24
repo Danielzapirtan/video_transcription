@@ -1,0 +1,6 @@
+flask==3.0.0
+pytube==15.0.0
+yt-dlp==2024.3.10
+browser-cookie3==0.19.1
+requests==2.31.0
+whispermlx

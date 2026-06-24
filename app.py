@@ -306,7 +306,7 @@ def transcribe_audio(audio_file_path, model_size, language):
         
         # Add output format as text
         cmd.extend(['--output_format', 'txt'])
-	cmd.extend(['--hf_token', os.getenv('HF_TOKEN')])
+        cmd.extend(['--hf_token', os.getenv('HF_TOKEN')])
         
         # Create output directory
         output_dir = tempfile.mkdtemp()
@@ -484,4 +484,4 @@ def check_dependencies_route():
 
 if __name__ == '__main__':
     print("🚀 Starting Flask Video Transcription Server...")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5004)
